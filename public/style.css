@@ -814,6 +814,294 @@ input.invalid,
   word-break: break-all;
 }
 
+/* ---------- 链路区 ---------- */
+
+.chain-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 1320px;
+  margin: 18px auto 0;
+}
+
+.chain-intro {
+  margin: 0 0 14px;
+}
+
+.chain-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.chain-toolbar select {
+  width: auto;
+  min-width: 200px;
+  max-width: 320px;
+}
+
+.chain-toolbar input[type="text"] {
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+
+.chain-toolbar-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.chain-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chain-step {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafbfd;
+}
+
+.chain-step.is-off {
+  border-style: dashed;
+  background: #f3f5f9;
+  opacity: 0.78;
+}
+
+.chain-step-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.chain-step-ord {
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.chain-case-select {
+  flex: 1 1 240px;
+  min-width: 200px;
+  width: auto;
+}
+
+.chain-step-tools {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.chain-off-note {
+  margin: 10px 0 0;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.chain-binds {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.chain-bind {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.chain-bind-word {
+  color: var(--text-soft);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.chain-bind select {
+  width: auto;
+  min-width: 110px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.chain-input {
+  flex: 1 1 150px;
+  min-width: 130px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.chain-input-path {
+  flex: 2 1 200px;
+  font-family: "Consolas", "Courier New", monospace;
+}
+
+.chain-bind-place {
+  display: inline-flex;
+  flex: 1 1 160px;
+  min-width: 150px;
+}
+
+.chain-bind-place input,
+.chain-bind-place select {
+  width: 100%;
+}
+
+.chain-error {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid #f0c2bc;
+  border-left: 4px solid var(--danger);
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.chain-error[hidden] {
+  display: none;
+}
+
+/* 发送预览 */
+
+.preview-step {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafbfd;
+}
+
+.preview-step + .preview-step {
+  margin-top: 10px;
+}
+
+.preview-step.is-off {
+  border-style: dashed;
+  opacity: 0.7;
+}
+
+.preview-step-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.preview-line {
+  margin: 8px 0 0;
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.preview-url {
+  color: var(--accent);
+}
+
+.preview-injects {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.preview-headers {
+  margin-top: 8px;
+}
+
+.preview-header-line {
+  display: flex;
+  gap: 8px;
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.preview-header-key {
+  color: var(--text-soft);
+  flex-shrink: 0;
+}
+
+.preview-header-value {
+  word-break: break-all;
+}
+
+.preview-body {
+  max-height: 260px;
+  margin: 8px 0 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fbfcfe;
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 取值占位符高亮：发送前就能看到这块内容来自第几步的哪一段 */
+.chain-token {
+  display: inline-block;
+  margin: 0 2px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: #fef3c7;
+  border: 1px solid #f2d3a3;
+  color: #92600a;
+  font-weight: 600;
+  cursor: help;
+  white-space: nowrap;
+}
+
+/* 链路执行结果 */
+
+.chain-result-ok,
+.chain-result-bad {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.chain-result-ok {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.chain-result-bad {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.result-stepcard {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafbfd;
+}
+
+.result-stepcard + .result-stepcard {
+  margin-top: 10px;
+}
+
 /* ---------- 窄屏 ---------- */
 
 @media (max-width: 1080px) {

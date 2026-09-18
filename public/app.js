@@ -10,7 +10,29 @@
     busy: false,
     result: null,
     resultView: 'structured',
+    chains: [],
+    chainDraft: emptyChainDraft(),
+    chainSavedId: '',
+    chainBusy: false,
+    chainPreview: [],
+    chainPreviewTimer: 0,
+    chainResult: null,
   };
+
+  function uid(prefix) {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return `${prefix || 'id'}-${window.crypto.randomUUID()}`;
+    }
+    return `${prefix || 'id'}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function emptyChainDraft() {
+    return { id: '', name: '', steps: [] };
+  }
+
+  function emptyBinding() {
+    return { id: uid('bind'), target: 'url', headerKey: '', path: '', sourceStepId: '', valuePath: '' };
+  }
 
   const dom = {
     health: document.getElementById('health-badge'),
@@ -34,6 +56,20 @@
     refreshCases: document.getElementById('refresh-cases'),
     caseDetail: document.getElementById('case-detail'),
     closeDetail: document.getElementById('close-detail'),
+    chainPicker: document.getElementById('chain-picker'),
+    chainName: document.getElementById('chain-name'),
+    chainNew: document.getElementById('chain-new'),
+    chainSave: document.getElementById('chain-save'),
+    chainDelete: document.getElementById('chain-delete'),
+    chainSteps: document.getElementById('chain-steps'),
+    chainAddStep: document.getElementById('chain-add-step'),
+    chainRun: document.getElementById('chain-run'),
+    chainHint: document.getElementById('chain-hint'),
+    chainError: document.getElementById('chain-error'),
+    chainPreview: document.getElementById('chain-preview'),
+    chainResultPanel: document.getElementById('chain-result-panel'),
+    chainResult: document.getElementById('chain-result'),
+    chainClearResult: document.getElementById('chain-clear-result'),
   };
 
   const emptyDetailHint = '在用例列表点「详情」，这里显示该用例保存下来的目标地址、请求头与请求内容。';
@@ -564,6 +600,11 @@
       state.selectedId = '';
     }
     renderCases();
+    // 用例集合变化后，链路步骤里的用例下拉、来源说明与「用例缺失」标记也要跟着刷新
+    if (state.chainDraft && state.chainDraft.steps.length) {
+      renderChainSteps();
+      scheduleChainPreview();
+    }
   }
 
   function renderCases() {
@@ -810,6 +851,633 @@
     }
   }
 
+  // ---------------- 链路区 ----------------
+
+  async function loadChains() {
+    const list = await request('/api/chains');
+    state.chains = Array.isArray(list) ? list : [];
+    renderChainPicker();
+    if (state.chainSavedId && !state.chains.some((item) => item.id === state.chainSavedId)) {
+      state.chainSavedId = '';
+    }
+  }
+
+  function caseById(id) {
+    return state.cases.find((item) => item.id === id) || null;
+  }
+
+  // 已保存链路与页面草稿的结构可能缺字段，统一补齐再渲染/提交
+  function normalizeDraftStep(step) {
+    const source = step && typeof step === 'object' ? step : {};
+    return {
+      id: source.id || uid('step'),
+      caseId: typeof source.caseId === 'string' ? source.caseId : '',
+      enabled: source.enabled !== false,
+      bindings: Array.isArray(source.bindings) ? source.bindings.map((item) => ({
+        id: item.id || uid('bind'),
+        target: ['url', 'header', 'body'].includes(item.target) ? item.target : 'url',
+        headerKey: typeof item.headerKey === 'string' ? item.headerKey : '',
+        path: typeof item.path === 'string' ? item.path : '',
+        sourceStepId: typeof item.sourceStepId === 'string' ? item.sourceStepId : '',
+        valuePath: typeof item.valuePath === 'string' ? item.valuePath : '',
+      })) : [],
+    };
+  }
+
+  function chainFromServer(chain) {
+    return {
+      id: chain.id,
+      name: chain.name || '',
+      steps: Array.isArray(chain.steps) ? chain.steps.map(normalizeDraftStep) : [],
+    };
+  }
+
+  function collectChainPayload() {
+    return {
+      name: dom.chainName.value.trim(),
+      steps: state.chainDraft.steps.map((step) => ({
+        id: step.id,
+        caseId: step.caseId,
+        enabled: step.enabled,
+        bindings: step.bindings.map((binding) => ({
+          id: binding.id,
+          target: binding.target,
+          headerKey: binding.headerKey,
+          path: binding.path.trim(),
+          sourceStepId: binding.sourceStepId,
+          valuePath: binding.valuePath.trim(),
+        })),
+      })),
+    };
+  }
+
+  function renderChainPicker() {
+    const current = state.chainSavedId;
+    dom.chainPicker.textContent = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = state.chains.length ? '选择已保存的链路…' : '还没有保存过链路';
+    dom.chainPicker.appendChild(placeholder);
+    state.chains.forEach((chain) => {
+      const option = document.createElement('option');
+      option.value = chain.id;
+      option.textContent = chain.name;
+      dom.chainPicker.appendChild(option);
+    });
+    dom.chainPicker.value = current || '';
+  }
+
+  function loadChainIntoEditor(chain) {
+    state.chainDraft = chainFromServer(chain);
+    state.chainSavedId = chain.id;
+    dom.chainName.value = chain.name;
+    dom.chainPicker.value = chain.id;
+    renderChainSteps();
+    refreshChainPreview();
+    hideChainError();
+  }
+
+  function newChainEditor() {
+    state.chainDraft = emptyChainDraft();
+    state.chainSavedId = '';
+    dom.chainName.value = '';
+    dom.chainPicker.value = '';
+    state.chainResult = null;
+    dom.chainResultPanel.hidden = true;
+    addChainStep();
+    hideChainError();
+  }
+
+  function addChainStep() {
+    state.chainDraft.steps.push(normalizeDraftStep({ id: uid('step'), enabled: true, bindings: [] }));
+    renderChainSteps();
+    scheduleChainPreview();
+  }
+
+  function moveChainStep(index, delta) {
+    const target = index + delta;
+    const steps = state.chainDraft.steps;
+    if (target < 0 || target >= steps.length) return;
+    const [item] = steps.splice(index, 1);
+    steps.splice(target, 0, item);
+    renderChainSteps();
+    scheduleChainPreview();
+  }
+
+  function removeChainStep(index) {
+    state.chainDraft.steps.splice(index, 1);
+    renderChainSteps();
+    scheduleChainPreview();
+  }
+
+  function toggleChainStep(index) {
+    const step = state.chainDraft.steps[index];
+    step.enabled = !step.enabled;
+    renderChainSteps();
+    scheduleChainPreview();
+  }
+
+  function addBinding(index) {
+    state.chainDraft.steps[index].bindings.push(emptyBinding());
+    renderChainSteps();
+    scheduleChainPreview();
+  }
+
+  function removeBinding(stepIndex, bindIndex) {
+    state.chainDraft.steps[stepIndex].bindings.splice(bindIndex, 1);
+    renderChainSteps();
+    scheduleChainPreview();
+  }
+
+  function renderChainSteps() {
+    const steps = state.chainDraft.steps;
+    dom.chainSteps.textContent = '';
+    dom.chainHint.textContent = steps.length
+      ? `共 ${steps.length} 步，启用 ${steps.filter((s) => s.enabled).length} 步`
+      : '';
+
+    if (!steps.length) {
+      const empty = document.createElement('p');
+      empty.className = 'rows-empty';
+      empty.textContent = '链路还是空的，点「添加一步」从用例里挑一条开始。';
+      dom.chainSteps.appendChild(empty);
+      return;
+    }
+
+    steps.forEach((step, index) => {
+      dom.chainSteps.appendChild(buildChainStepCard(step, index));
+    });
+  }
+
+  function buildChainStepCard(step, index) {
+    const ordinal = index + 1;
+    const card = document.createElement('div');
+    card.className = 'chain-step';
+    if (!step.enabled) card.classList.add('is-off');
+
+    const head = document.createElement('div');
+    head.className = 'chain-step-head';
+
+    const ord = document.createElement('span');
+    ord.className = 'chain-step-ord';
+    ord.textContent = `第 ${ordinal} 步`;
+
+    const caseSelect = document.createElement('select');
+    caseSelect.className = 'chain-case-select';
+    caseSelect.dataset.role = 'case';
+    caseSelect.dataset.index = String(index);
+    const please = document.createElement('option');
+    please.value = '';
+    please.textContent = '选择已保存的用例';
+    caseSelect.appendChild(please);
+    state.cases.forEach((item) => {
+      const option = document.createElement('option');
+      option.value = item.id;
+      option.textContent = `${item.method} ${item.name}`;
+      caseSelect.appendChild(option);
+    });
+    caseSelect.value = step.caseId;
+
+    const missingTag = step.caseId && !caseById(step.caseId)
+      ? buildTag('用例缺失', 'delete')
+      : null;
+
+    const tools = document.createElement('div');
+    tools.className = 'chain-step-tools';
+    tools.appendChild(buildToolButton('上移', 'up', index, index === 0));
+    tools.appendChild(buildToolButton('下移', 'down', index, index === state.chainDraft.steps.length - 1));
+    const toggleBtn = buildToolButton(step.enabled ? '跳过' : '放回', 'toggle', index, false);
+    if (!step.enabled) toggleBtn.classList.add('btn-primary');
+    tools.appendChild(toggleBtn);
+    tools.appendChild(buildToolButton('移除', 'remove', index, false, true));
+
+    head.append(ord, caseSelect);
+    if (missingTag) head.appendChild(missingTag);
+    head.appendChild(tools);
+    card.appendChild(head);
+
+    if (step.enabled) {
+      const binds = document.createElement('div');
+      binds.className = 'chain-binds';
+      if (!step.bindings.length) {
+        const none = document.createElement('p');
+        none.className = 'rows-empty';
+        none.textContent = '本步不取值，直接按用例原样发送。';
+        binds.appendChild(none);
+      } else {
+        step.bindings.forEach((binding, bindIndex) => {
+          binds.appendChild(buildBindingRow(step, binding, index, bindIndex, ordinal));
+        });
+      }
+      const addBind = document.createElement('button');
+      addBind.type = 'button';
+      addBind.className = 'btn btn-ghost btn-small';
+      addBind.textContent = '添加一个取值';
+      addBind.dataset.act = 'add-binding';
+      addBind.dataset.index = String(index);
+      binds.appendChild(addBind);
+      card.appendChild(binds);
+    } else {
+      const off = document.createElement('p');
+      off.className = 'chain-off-note';
+      off.textContent = '这一步已被临时跳过，不会发送，也不能作为后面步骤的取值来源。';
+      card.appendChild(off);
+    }
+
+    return card;
+  }
+
+  function buildToolButton(text, act, index, disabled, danger) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `btn btn-small${danger ? ' btn-danger' : ''}`;
+    button.textContent = text;
+    button.dataset.act = act;
+    button.dataset.index = String(index);
+    button.disabled = !!disabled;
+    return button;
+  }
+
+  // 一个取值绑定：从来源步骤的响应路径取值，注入到本步的指定位置
+  function buildBindingRow(step, binding, stepIndex, bindIndex, ordinal) {
+    const row = document.createElement('div');
+    row.className = 'chain-bind';
+
+    const common = (node, role) => {
+      node.dataset.role = role;
+      node.dataset.index = String(stepIndex);
+      node.dataset.bind = String(bindIndex);
+      return node;
+    };
+
+    const fromLabel = document.createElement('span');
+    fromLabel.className = 'chain-bind-word';
+    fromLabel.textContent = '从第';
+
+    // 来源步骤只列出排在本步之前的步骤，跳过的步骤置灰不可选
+    const sourceSelect = common(document.createElement('select'), 'source');
+    const srcPlease = document.createElement('option');
+    srcPlease.value = '';
+    srcPlease.textContent = '步骤';
+    sourceSelect.appendChild(srcPlease);
+    state.chainDraft.steps.forEach((candidate, candidateIndex) => {
+      if (candidateIndex >= stepIndex) return;
+      const option = document.createElement('option');
+      option.value = candidate.id;
+      const useCase = caseById(candidate.caseId);
+      option.textContent = `${candidateIndex + 1} 步${useCase ? ` · ${useCase.name}` : ' · 用例缺失'}`;
+      option.disabled = !candidate.enabled || !candidate.caseId;
+      sourceSelect.appendChild(option);
+    });
+    sourceSelect.value = binding.sourceStepId;
+    if (binding.sourceStepId && !Array.from(sourceSelect.options).some((o) => o.value === binding.sourceStepId && !o.disabled)) {
+      const broken = document.createElement('option');
+      broken.value = binding.sourceStepId;
+      broken.textContent = '来源不可用';
+      sourceSelect.appendChild(broken);
+      sourceSelect.value = binding.sourceStepId;
+    }
+
+    const fromLabel2 = document.createElement('span');
+    fromLabel2.className = 'chain-bind-word';
+    fromLabel2.textContent = '步响应的';
+
+    const valuePath = common(document.createElement('input'), 'valuePath');
+    valuePath.type = 'text';
+    valuePath.className = 'chain-input chain-input-path';
+    valuePath.placeholder = '取值路径，如 items[0].id';
+    valuePath.value = binding.valuePath;
+    valuePath.autocomplete = 'off';
+    valuePath.spellcheck = false;
+
+    const injectLabel = document.createElement('span');
+    injectLabel.className = 'chain-bind-word';
+    injectLabel.textContent = '注入到本步';
+
+    const targetSelect = common(document.createElement('select'), 'target');
+    [['url', '地址查询参数'], ['header', '某行请求头'], ['body', 'JSON 请求内容']].forEach(([value, text]) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = text;
+      targetSelect.appendChild(option);
+    });
+    targetSelect.value = binding.target;
+
+    // 注入位置控件随目标类型变化
+    const placeWrap = document.createElement('span');
+    placeWrap.className = 'chain-bind-place';
+    const useCase = caseById(step.caseId);
+    if (binding.target === 'header') {
+      const headerSelect = common(document.createElement('select'), 'headerKey');
+      const hPlease = document.createElement('option');
+      hPlease.value = '';
+      hPlease.textContent = '选择请求头';
+      headerSelect.appendChild(hPlease);
+      (useCase ? useCase.headers : []).forEach((h) => {
+        const option = document.createElement('option');
+        option.value = h.key;
+        option.textContent = h.key;
+        headerSelect.appendChild(option);
+      });
+      headerSelect.value = binding.headerKey;
+      placeWrap.appendChild(headerSelect);
+    } else {
+      const placeInput = common(document.createElement('input'), 'path');
+      placeInput.type = 'text';
+      placeInput.className = 'chain-input';
+      placeInput.placeholder = binding.target === 'url' ? '查询参数名，如 orderId' : '内容位置，如 orderId 或 user.id';
+      placeInput.value = binding.path;
+      placeInput.autocomplete = 'off';
+      placeInput.spellcheck = false;
+      placeWrap.appendChild(placeInput);
+    }
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn btn-ghost btn-small btn-danger';
+    remove.textContent = '删除取值';
+    remove.dataset.act = 'remove-binding';
+    remove.dataset.index = String(stepIndex);
+    remove.dataset.bind = String(bindIndex);
+
+    row.append(fromLabel, sourceSelect, fromLabel2, valuePath, injectLabel, targetSelect, placeWrap, remove);
+    return row;
+  }
+
+  // ---------------- 链路预览 ----------------
+
+  function scheduleChainPreview() {
+    window.clearTimeout(state.chainPreviewTimer);
+    state.chainPreviewTimer = window.setTimeout(refreshChainPreview, 250);
+  }
+
+  async function refreshChainPreview() {
+    const payload = collectChainPayload();
+    if (!payload.steps.length) {
+      state.chainPreview = [];
+      renderChainPreview();
+      return;
+    }
+    try {
+      const data = await request('/api/chains/preview', { method: 'POST', body: payload });
+      state.chainPreview = Array.isArray(data.steps) ? data.steps : [];
+      hideChainError();
+      renderChainPreview();
+    } catch (err) {
+      state.chainPreview = [];
+      showChainError(err.message);
+      renderChainPreview();
+    }
+  }
+
+  function showChainError(message) {
+    dom.chainError.textContent = message;
+    dom.chainError.hidden = false;
+  }
+
+  function hideChainError() {
+    dom.chainError.textContent = '';
+    dom.chainError.hidden = true;
+  }
+
+  // 把 {{@step=N@path}} 占位符渲染成带来源说明的高亮片段
+  const TOKEN_RE = /\{\{@step=(\d+)@([^}]*?)\}\}/g;
+  function fragmentWithTokens(text) {
+    const fragment = document.createDocumentFragment();
+    const content = String(text == null ? '' : text);
+    let last = 0;
+    let match = null;
+    TOKEN_RE.lastIndex = 0;
+    while ((match = TOKEN_RE.exec(content)) !== null) {
+      if (match.index > last) fragment.appendChild(document.createTextNode(content.slice(last, match.index)));
+      const token = document.createElement('span');
+      token.className = 'chain-token';
+      token.title = `这个值在发送时取自第 ${match[1]} 步响应里的 ${match[2]}`;
+      token.textContent = `〔取自第 ${match[1]} 步 · ${match[2]}〕`;
+      fragment.appendChild(token);
+      last = TOKEN_RE.lastIndex;
+    }
+    fragment.appendChild(document.createTextNode(content.slice(last)));
+    return fragment;
+  }
+
+  function renderChainPreview() {
+    dom.chainPreview.textContent = '';
+    if (!state.chainPreview.length) {
+      const note = document.createElement('p');
+      note.className = 'empty-sub';
+      note.textContent = '链路配置无误后，这里按执行顺序列出每一步实际会发出的方法、地址、请求头与请求内容；取值位置会高亮并标明来源。';
+      dom.chainPreview.appendChild(note);
+      return;
+    }
+
+    state.chainPreview.forEach((preview) => {
+      const block = document.createElement('div');
+      block.className = 'preview-step';
+      if (!preview.enabled) block.classList.add('is-off');
+
+      const title = document.createElement('div');
+      title.className = 'preview-step-title';
+      title.append(buildTag(preview.method, String(preview.method).toLowerCase()));
+      const titleText = document.createElement('span');
+      titleText.textContent = `第 ${preview.ordinal} 步 · ${preview.caseName}${preview.enabled ? '' : '（已跳过）'}`;
+      title.appendChild(titleText);
+      block.appendChild(title);
+
+      if (!preview.enabled) {
+        dom.chainPreview.appendChild(block);
+        return;
+      }
+
+      const urlLine = document.createElement('p');
+      urlLine.className = 'preview-line preview-url';
+      urlLine.appendChild(fragmentWithTokens(preview.url));
+      block.appendChild(urlLine);
+
+      if (preview.injections.length) {
+        const mark = document.createElement('p');
+        mark.className = 'preview-injects';
+        preview.injections.forEach((inj, i) => {
+          if (i) mark.appendChild(document.createTextNode('；'));
+          const where = inj.target === 'url'
+            ? `地址参数「${inj.path}」`
+            : inj.target === 'header'
+              ? `请求头「${inj.headerKey}」`
+              : `内容「${inj.path}」`;
+          mark.appendChild(document.createTextNode(`${where} ← 第 ${inj.sourceOrdinal} 步响应 ${inj.valuePath}`));
+        });
+        block.appendChild(mark);
+      }
+
+      if (preview.headers.length) {
+        const headerWrap = document.createElement('div');
+        headerWrap.className = 'preview-headers';
+        preview.headers.forEach((h) => {
+          const line = document.createElement('div');
+          line.className = 'preview-header-line';
+          const key = document.createElement('span');
+          key.className = 'preview-header-key';
+          key.textContent = `${h.key}:`;
+          const value = document.createElement('span');
+          value.className = 'preview-header-value';
+          value.appendChild(fragmentWithTokens(h.value));
+          line.append(key, value);
+          headerWrap.appendChild(line);
+        });
+        block.appendChild(headerWrap);
+      }
+
+      if (preview.body) {
+        const pre = document.createElement('pre');
+        pre.className = 'preview-body';
+        pre.appendChild(fragmentWithTokens(preview.body));
+        block.appendChild(pre);
+      }
+
+      dom.chainPreview.appendChild(block);
+    });
+  }
+
+  // ---------------- 链路保存 / 删除 / 执行 ----------------
+
+  function setChainBusy(busy, action) {
+    state.chainBusy = busy;
+    [dom.chainRun, dom.chainSave, dom.chainDelete, dom.chainNew, dom.chainAddStep, dom.chainPicker].forEach((node) => {
+      node.disabled = busy;
+    });
+    dom.chainRun.textContent = busy && action === 'run' ? '正在依次发送…' : '依次发送链路';
+    dom.chainSave.textContent = busy && action === 'save' ? '正在保存…' : '保存链路';
+  }
+
+  async function saveChain() {
+    if (state.chainBusy) return;
+    const payload = collectChainPayload();
+    if (!payload.name) {
+      showChainError('请先在上方填写链路名称再保存。');
+      dom.chainName.focus();
+      return;
+    }
+    setChainBusy(true, 'save');
+    try {
+      let saved = null;
+      if (state.chainSavedId) {
+        saved = await request(`/api/chains/${encodeURIComponent(state.chainSavedId)}`, { method: 'PUT', body: payload });
+      } else {
+        saved = await request('/api/chains', { method: 'POST', body: payload });
+      }
+      state.chainDraft = chainFromServer(saved);
+      state.chainSavedId = saved.id;
+      await loadChains();
+      dom.chainPicker.value = saved.id;
+      renderChainSteps();
+      await refreshChainPreview();
+      showNotice(`链路「${saved.name}」已保存`, 'success');
+    } catch (err) {
+      showChainError(err.message);
+    } finally {
+      setChainBusy(false);
+    }
+  }
+
+  async function deleteChain() {
+    if (state.chainBusy) return;
+    if (!state.chainSavedId) {
+      showChainError('当前是尚未保存的新链路，直接点「新建」清空即可。');
+      return;
+    }
+    const name = dom.chainName.value.trim() || '这条链路';
+    const confirmed = window.confirm(`确认删除链路「${name}」？链路里引用的用例不会被删除。`);
+    if (!confirmed) return;
+    setChainBusy(true, 'delete');
+    try {
+      await request(`/api/chains/${encodeURIComponent(state.chainSavedId)}`, { method: 'DELETE' });
+      showNotice(`链路「${name}」已删除，引用的用例保留不动`, 'success');
+      state.chainSavedId = '';
+      await loadChains();
+      newChainEditor();
+    } catch (err) {
+      showChainError(err.message);
+    } finally {
+      setChainBusy(false);
+    }
+  }
+
+  async function runChain() {
+    if (state.chainBusy) return;
+    const payload = collectChainPayload();
+    if (!payload.steps.length) {
+      showChainError('链路里还没有任何步骤，先添加一步再发送。');
+      return;
+    }
+    setChainBusy(true, 'run');
+    state.chainResult = null;
+    renderChainResult();
+    try {
+      const report = await request('/api/chains/run', { method: 'POST', body: payload });
+      state.chainResult = report;
+      renderChainResult();
+      if (report.ok) {
+        showNotice(`链路全部完成，共发送 ${report.results.length} 步`, 'success');
+      } else {
+        showChainError(report.reason || '链路在某一步停止了');
+        showNotice(report.reason || '链路已停止', 'error');
+      }
+    } catch (err) {
+      showChainError(err.message);
+      showNotice(err.message, 'error');
+    } finally {
+      setChainBusy(false);
+    }
+  }
+
+  function renderChainResult() {
+    const report = state.chainResult;
+    dom.chainResultPanel.hidden = !report;
+    if (!report) return;
+    dom.chainResult.textContent = '';
+
+    const summary = document.createElement('p');
+    summary.className = report.ok ? 'chain-result-ok' : 'chain-result-bad';
+    summary.textContent = report.ok
+      ? `全部 ${report.results.length} 步发送成功。`
+      : `链路在执行第 ${report.stoppedAt} 步时停止：${report.reason}`;
+    dom.chainResult.appendChild(summary);
+
+    report.results.forEach((entry) => {
+      const block = document.createElement('div');
+      block.className = 'result-stepcard';
+      const head = document.createElement('div');
+      head.className = 'preview-step-title';
+      head.appendChild(buildStatusBadge(entry.result.ok ? entry.result.status : 0, entry.result.ok ? entry.result.statusText : '未完成'));
+      const text = document.createElement('span');
+      text.textContent = `执行第 ${entry.ordinal} 步（编辑区第 ${entry.stepOrdinal} 步）· ${entry.caseName} · ${formatDuration(entry.result.timeMs)}`;
+      head.appendChild(text);
+      block.appendChild(head);
+
+      const urlLine = document.createElement('p');
+      urlLine.className = 'preview-line preview-url';
+      urlLine.textContent = entry.draft.url;
+      block.appendChild(urlLine);
+
+      if (entry.injections.length) {
+        const mark = document.createElement('p');
+        mark.className = 'preview-injects';
+        entry.injections.forEach((inj, i) => {
+          if (i) mark.appendChild(document.createTextNode('；'));
+          mark.appendChild(document.createTextNode(
+            `${inj.target === 'url' ? `参数「${inj.path}」` : inj.target === 'header' ? `请求头「${inj.headerKey}」` : `内容「${inj.path}」`} = ${inj.value}（来自第 ${inj.sourceOrdinal} 步 ${inj.valuePath}）`
+          ));
+        });
+        block.appendChild(mark);
+      }
+
+      if (!entry.result.ok) {
+        block.appendChild(buildFailurePanel('这一步没有完成', entry.result.failure.reason, entry.result.failure.detail));
+      }
+      dom.chainResult.appendChild(block);
+    });
+  }
+
   // ---------------- 结果区小零件 ----------------
 
   function buildSection(title) {
@@ -970,6 +1638,115 @@
       renderCases();
       renderEmptyDetail();
     });
+
+    // ---------- 链路区 ----------
+
+    dom.chainPicker.addEventListener('change', () => {
+      if (state.chainBusy) return;
+      const id = dom.chainPicker.value;
+      if (!id) return;
+      const chain = state.chains.find((item) => item.id === id);
+      if (chain) loadChainIntoEditor(chain);
+    });
+
+    dom.chainName.addEventListener('input', () => {
+      state.chainDraft.name = dom.chainName.value;
+    });
+
+    dom.chainNew.addEventListener('click', () => {
+      if (state.chainBusy) return;
+      newChainEditor();
+    });
+
+    dom.chainSave.addEventListener('click', saveChain);
+    dom.chainDelete.addEventListener('click', deleteChain);
+    dom.chainAddStep.addEventListener('click', () => {
+      if (state.chainBusy) return;
+      addChainStep();
+    });
+    dom.chainRun.addEventListener('click', runChain);
+
+    dom.chainClearResult.addEventListener('click', () => {
+      state.chainResult = null;
+      dom.chainResultPanel.hidden = true;
+    });
+
+    // 步骤上的按钮统一用 data-act 委托
+    dom.chainSteps.addEventListener('click', (event) => {
+      if (state.chainBusy) return;
+      const button = event.target.closest('button[data-act]');
+      if (!button || !dom.chainSteps.contains(button)) return;
+      const index = Number(button.dataset.index);
+      if (!Number.isInteger(index)) return;
+      switch (button.dataset.act) {
+        case 'up':
+          moveChainStep(index, -1);
+          break;
+        case 'down':
+          moveChainStep(index, 1);
+          break;
+        case 'toggle':
+          toggleChainStep(index);
+          break;
+        case 'remove':
+          removeChainStep(index);
+          break;
+        case 'add-binding':
+          addBinding(index);
+          break;
+        case 'remove-binding': {
+          const bindIndex = Number(button.dataset.bind);
+          if (Number.isInteger(bindIndex)) removeBinding(index, bindIndex);
+          break;
+        }
+        default:
+          break;
+      }
+    });
+
+    // 用例选择、来源选择、注入目标属于 change；文本输入属于 input
+    dom.chainSteps.addEventListener('change', (event) => {
+      if (state.chainBusy) return;
+      const node = event.target;
+      const role = node.dataset ? node.dataset.role : '';
+      if (!role) return;
+      const index = Number(node.dataset.index);
+      if (!Number.isInteger(index) || !state.chainDraft.steps[index]) return;
+      const step = state.chainDraft.steps[index];
+
+      if (role === 'case') {
+        step.caseId = node.value;
+        // 换用例后请求头绑定可能失效，渲染时让用户重新挑；其余绑定保留
+        renderChainSteps();
+        scheduleChainPreview();
+        return;
+      }
+
+      const bindIndex = Number(node.dataset.bind);
+      const binding = step.bindings[bindIndex];
+      if (!binding) return;
+      if (role === 'source') binding.sourceStepId = node.value;
+      if (role === 'target') {
+        binding.target = node.value;
+        // 切换注入目标后位置控件类型会变，重新渲染整行
+        renderChainSteps();
+      }
+      if (role === 'headerKey') binding.headerKey = node.value;
+      scheduleChainPreview();
+    });
+
+    dom.chainSteps.addEventListener('input', (event) => {
+      const node = event.target;
+      const role = node.dataset ? node.dataset.role : '';
+      if (role !== 'valuePath' && role !== 'path') return;
+      const index = Number(node.dataset.index);
+      const bindIndex = Number(node.dataset.bind);
+      const binding = state.chainDraft.steps[index] && state.chainDraft.steps[index].bindings[bindIndex];
+      if (!binding) return;
+      if (role === 'valuePath') binding.valuePath = node.value;
+      if (role === 'path') binding.path = node.value;
+      scheduleChainPreview();
+    });
   }
 
   async function init() {
@@ -978,6 +1755,8 @@
     renderEmptyDetail();
     renderEmptyResult();
     renderCases();
+    renderChainSteps();
+    renderChainPreview();
     await checkHealth();
     await loadDemos();
     try {
@@ -985,6 +1764,13 @@
     } catch (err) {
       showNotice(err.message, 'error');
     }
+    try {
+      await loadChains();
+    } catch (err) {
+      showNotice(err.message, 'error');
+    }
+    // 默认进入新建链路编辑态，添加一个空步骤方便直接开始
+    newChainEditor();
   }
 
   init();

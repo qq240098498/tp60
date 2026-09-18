@@ -1,11 +1,12 @@
 const path = require('path');
 const express = require('express');
 const api = require('./api');
+const chainApi = require('./chain');
 const target = require('./target');
 const demos = require('./demo-routes');
 
 const app = express();
-const PORT = process.env.PORT || 5060;
+const PORT = process.env.PORT || 8080;
 
 // 请求内容按类型分别解析：结构化内容、纯文本与表单内容都能被内置回声接口如实回显
 app.use(express.json({ limit: '1mb' }));
@@ -58,6 +59,74 @@ app.post('/api/cases', (req, res) => {
 app.delete('/api/cases/:id', (req, res) => {
   try {
     res.json(api.deleteCase(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 多步链路：列表、详情、保存（新增或整条覆盖更新）、删除互不牵连用例
+app.get('/api/chains', (_req, res) => {
+  res.json(chainApi.listChains());
+});
+
+app.get('/api/chains/:id', (req, res) => {
+  try {
+    res.json(chainApi.getChain(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 预览：按当前编辑内容算出每一步实际会发出的地址、请求头、请求内容（取值以占位符呈现）
+app.post('/api/chains/preview', (req, res) => {
+  try {
+    res.json({ steps: chainApi.previewChain(req.body) });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 按当前编辑内容直接试跑整条链路，不必先保存
+app.post('/api/chains/run', async (req, res) => {
+  try {
+    const report = await chainApi.runChainPayload(req.body, PORT);
+    res.json(report);
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.post('/api/chains', (req, res) => {
+  try {
+    const { created, chain } = chainApi.saveChain(req.body);
+    res.status(created ? 201 : 200).json(chain);
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.put('/api/chains/:id', (req, res) => {
+  try {
+    const { chain } = chainApi.saveChain(req.body, req.params.id);
+    res.json(chain);
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.delete('/api/chains/:id', (req, res) => {
+  try {
+    res.json(chainApi.deleteChain(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 发送整条链路：服务端顺序执行，前一步响应供后一步取值
+app.post('/api/chains/:id/run', async (req, res) => {
+  try {
+    const report = await chainApi.runChain(req.params.id, PORT);
+    res.json(report);
   } catch (err) {
     sendError(res, err);
   }

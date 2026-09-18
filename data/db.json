@@ -59,6 +59,56 @@
       "body": "",
       "createdAt": "2026-09-17T02:30:00.000Z",
       "updatedAt": "2026-09-17T02:30:00.000Z"
+    },
+    {
+      "id": "case-1005",
+      "name": "回声接口接收链路取值",
+      "method": "POST",
+      "url": "/demo/echo?orderId=",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "key": "X-Order-Id",
+          "value": ""
+        }
+      ],
+      "body": "{\n  \"orderId\": \"\",\n  \"source\": \"chain\"\n}",
+      "createdAt": "2026-09-18T03:05:00.000Z",
+      "updatedAt": "2026-09-18T03:05:00.000Z"
+    }
+  ],
+  "chains": [
+    {
+      "id": "chain-2001",
+      "name": "列表取编号再回显",
+      "steps": [
+        {
+          "id": "step-2001-1",
+          "caseId": "case-1003",
+          "enabled": true,
+          "bindings": []
+        },
+        {
+          "id": "step-2001-2",
+          "caseId": "case-1005",
+          "enabled": true,
+          "bindings": [
+            {
+              "id": "bind-2001-1",
+              "target": "body",
+              "headerKey": "",
+              "path": "orderId",
+              "sourceStepId": "step-2001-1",
+              "valuePath": "items[0].id"
+            }
+          ]
+        }
+      ],
+      "createdAt": "2026-09-18T03:10:00.000Z",
+      "updatedAt": "2026-09-18T03:10:00.000Z"
     }
   ]
 }

@@ -122,6 +122,55 @@
     </div>
   </main>
 
+  <section class="chain-zone">
+    <div class="panel" id="chain-panel">
+      <div class="panel-head">
+        <h2>链路区</h2>
+        <span class="panel-tag">多步串联</span>
+      </div>
+      <p class="field-hint chain-intro">
+        每一步都从已保存的用例里挑一条，可以调整先后、临时跳过再放回来；每一步还能把前面某一步响应里取到的值，
+        注入到自己的目标地址查询参数、某一行请求头或 JSON 请求内容里。链路单独命名保存，删除链路不会删掉用例。
+      </p>
+
+      <div class="chain-toolbar">
+        <select id="chain-picker" aria-label="选择已保存的链路"></select>
+        <input id="chain-name" type="text" maxlength="60" placeholder="链路名称" autocomplete="off" />
+        <div class="chain-toolbar-btns">
+          <button type="button" class="btn btn-small" id="chain-new">新建</button>
+          <button type="button" class="btn btn-small" id="chain-save">保存链路</button>
+          <button type="button" class="btn btn-small btn-danger" id="chain-delete">删除链路</button>
+        </div>
+      </div>
+
+      <div class="chain-steps" id="chain-steps"></div>
+
+      <div class="actions">
+        <button type="button" class="btn" id="chain-add-step">添加一步</button>
+        <button type="button" class="btn btn-primary" id="chain-run">依次发送链路</button>
+        <span class="counter" id="chain-hint"></span>
+      </div>
+
+      <div class="chain-error" id="chain-error" hidden></div>
+    </div>
+
+    <div class="panel" id="chain-preview-panel">
+      <div class="panel-head">
+        <h2>发送预览</h2>
+        <span class="counter">发送前每一步实际会发出的内容；高亮处标明取值来自第几步的哪一段</span>
+      </div>
+      <div id="chain-preview"></div>
+    </div>
+
+    <div class="panel" id="chain-result-panel" hidden>
+      <div class="panel-head">
+        <h2>链路执行结果</h2>
+        <button type="button" class="btn btn-ghost btn-small" id="chain-clear-result">收起结果</button>
+      </div>
+      <div id="chain-result"></div>
+    </div>
+  </section>
+
   <script src="./app.js"></script>
 </body>
 </html>
