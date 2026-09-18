@@ -99,6 +99,51 @@
     </div>
 
     <div class="column">
+      <section class="panel" id="chain-panel">
+        <div class="panel-head">
+          <h2>链路区</h2>
+          <div class="panel-head-right">
+            <span class="counter" id="chain-summary">共 0 条</span>
+            <button type="button" class="btn btn-ghost btn-small" id="refresh-chains">刷新</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-head">
+            <label for="chain-select">已保存的链路</label>
+            <button type="button" class="btn btn-ghost btn-small" id="new-chain">新建链路</button>
+          </div>
+          <div class="chain-select-row">
+            <select id="chain-select"></select>
+            <button type="button" class="btn btn-small btn-danger" id="delete-chain" disabled>删除</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="chain-name">链路名称</label>
+          <input id="chain-name" type="text" maxlength="60" autocomplete="off" />
+          <p class="field-error" data-chain-error="name" hidden></p>
+        </div>
+
+        <div class="field">
+          <div class="field-head">
+            <label>步骤</label>
+            <button type="button" class="btn btn-ghost btn-small" id="add-step">添加步骤</button>
+          </div>
+          <p class="field-hint">每一步选择一条已保存的用例；在用例的地址、请求头或请求内容里写好 {{标记}}，再给这一步加一条注入规则，运行时就会把前面步骤响应里取到的值换进去</p>
+          <div class="chain-steps" id="chain-steps"></div>
+          <p class="field-error" data-chain-error="steps" hidden></p>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="btn btn-primary" id="run-chain">运行链路</button>
+          <button type="button" class="btn" id="save-chain">保存链路</button>
+        </div>
+
+        <div class="chain-preview" id="chain-preview"></div>
+        <div class="chain-run" id="chain-run"></div>
+      </section>
+
       <section class="panel" id="case-panel">
         <div class="panel-head">
           <h2>用例区</h2>

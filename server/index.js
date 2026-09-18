@@ -1,11 +1,12 @@
 const path = require('path');
 const express = require('express');
 const api = require('./api');
+const chain = require('./chain');
 const target = require('./target');
 const demos = require('./demo-routes');
 
 const app = express();
-const PORT = process.env.PORT || 5060;
+const PORT = process.env.PORT || 8080;
 
 // 请求内容按类型分别解析：结构化内容、纯文本与表单内容都能被内置回声接口如实回显
 app.use(express.json({ limit: '1mb' }));
@@ -58,6 +59,54 @@ app.post('/api/cases', (req, res) => {
 app.delete('/api/cases/:id', (req, res) => {
   try {
     res.json(api.deleteCase(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 链路运行：按提交的步骤顺序逐个发送，任何一步不成立都当场停下并说明位置
+// 放在 /api/chains/:id 之前注册，避免 run 被当成链路编号
+app.post('/api/chains/run', async (req, res) => {
+  try {
+    const result = await chain.runChain(req.body, PORT);
+    res.json(result);
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.get('/api/chains', (_req, res) => {
+  res.json(chain.listChains());
+});
+
+app.get('/api/chains/:id', (req, res) => {
+  try {
+    res.json(chain.getChain(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.post('/api/chains', (req, res) => {
+  try {
+    res.status(201).json(chain.createChain(req.body));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.put('/api/chains/:id', (req, res) => {
+  try {
+    res.json(chain.updateChain(req.params.id, req.body));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 删除链路只动链路本身，链路里引用的用例不受影响
+app.delete('/api/chains/:id', (req, res) => {
+  try {
+    res.json(chain.deleteChain(req.params.id));
   } catch (err) {
     sendError(res, err);
   }

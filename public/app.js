@@ -1,7 +1,8 @@
 (function () {
   'use strict';
 
-  // 页面状态：用例列表、内置示例接口、请求头草稿行、最近一次响应结果与结果视图
+  // 页面状态：用例列表、内置示例接口、请求头草稿行、最近一次响应结果与结果视图，
+  // 以及链路区的编辑状态（当前链路、步骤列表、运行结果）
   const state = {
     cases: [],
     selectedId: '',
@@ -10,6 +11,11 @@
     busy: false,
     result: null,
     resultView: 'structured',
+    chains: [],
+    chainId: '',
+    chainSteps: [],
+    chainRun: null,
+    chainBusy: false,
   };
 
   const dom = {
@@ -34,6 +40,18 @@
     refreshCases: document.getElementById('refresh-cases'),
     caseDetail: document.getElementById('case-detail'),
     closeDetail: document.getElementById('close-detail'),
+    chainSelect: document.getElementById('chain-select'),
+    chainSummary: document.getElementById('chain-summary'),
+    refreshChains: document.getElementById('refresh-chains'),
+    newChain: document.getElementById('new-chain'),
+    deleteChain: document.getElementById('delete-chain'),
+    chainName: document.getElementById('chain-name'),
+    chainSteps: document.getElementById('chain-steps'),
+    addStep: document.getElementById('add-step'),
+    runChain: document.getElementById('run-chain'),
+    saveChain: document.getElementById('save-chain'),
+    chainPreview: document.getElementById('chain-preview'),
+    chainRun: document.getElementById('chain-run'),
   };
 
   const emptyDetailHint = '在用例列表点「详情」，这里显示该用例保存下来的目标地址、请求头与请求内容。';
@@ -810,6 +828,797 @@
     }
   }
 
+  // ---------------- 链路区 ----------------
+
+  // 步骤与注入规则的前端编号：保存时原样交给服务端，规则里的「从哪一步取」靠它引用
+  let chainUidSeq = 0;
+  function nextChainUid(prefix) {
+    chainUidSeq += 1;
+    return `${prefix}-${Date.now().toString(36)}-${chainUidSeq}`;
+  }
+
+  function createEmptyStep() {
+    return { uid: nextChainUid('step'), caseId: '', skipped: false, extracts: [] };
+  }
+
+  function createEmptyExtract() {
+    return { uid: nextChainUid('ex'), key: '', fromStep: '', path: '' };
+  }
+
+  function setChainBusy(busy, action) {
+    state.chainBusy = busy;
+    dom.runChain.disabled = busy;
+    dom.saveChain.disabled = busy;
+    dom.addStep.disabled = busy;
+    dom.newChain.disabled = busy;
+    dom.chainSelect.disabled = busy;
+    dom.deleteChain.disabled = busy || !state.chainId;
+    dom.runChain.textContent = busy && action === 'run' ? '运行中…' : '运行链路';
+    dom.saveChain.textContent = busy && action === 'save' ? '正在保存…' : '保存链路';
+  }
+
+  async function loadChains() {
+    const list = await request('/api/chains');
+    state.chains = Array.isArray(list) ? list : [];
+    renderChainSelect();
+  }
+
+  function renderChainSelect() {
+    dom.chainSelect.textContent = '';
+    dom.chainSelect.add(new Option('新建链路（未保存）', ''));
+    state.chains.forEach((item) => {
+      dom.chainSelect.add(new Option(item.name, item.id));
+    });
+    dom.chainSelect.value = state.chainId;
+    dom.chainSummary.textContent = `共 ${state.chains.length} 条`;
+    dom.deleteChain.disabled = state.chainBusy || !state.chainId;
+  }
+
+  function startNewChain() {
+    state.chainId = '';
+    dom.chainName.value = '';
+    state.chainSteps = [createEmptyStep()];
+    state.chainRun = null;
+    dom.chainRun.textContent = '';
+    renderChainSelect();
+    renderChainSteps();
+    renderChainErrors([]);
+    renderChainPreview();
+  }
+
+  // 打开一条已保存的链路：以服务端保存下来的内容为准写回编辑区
+  function loadChainIntoEditor(chain) {
+    state.chainId = chain.id;
+    dom.chainName.value = chain.name || '';
+    state.chainSteps = (Array.isArray(chain.steps) ? chain.steps : []).map((step) => ({
+      uid: step.id || nextChainUid('step'),
+      caseId: typeof step.caseId === 'string' ? step.caseId : '',
+      skipped: step.skipped === true,
+      extracts: (Array.isArray(step.extracts) ? step.extracts : []).map((rule) => ({
+        uid: rule.id || nextChainUid('ex'),
+        key: typeof rule.key === 'string' ? rule.key : '',
+        fromStep: typeof rule.fromStep === 'string' ? rule.fromStep : '',
+        path: typeof rule.path === 'string' ? rule.path : '',
+      })),
+    }));
+    state.chainRun = null;
+    dom.chainRun.textContent = '';
+    renderChainSelect();
+    renderChainSteps();
+    renderChainErrors(validateChainLocal());
+    renderChainPreview();
+  }
+
+  // ---------------- 链路步骤编辑 ----------------
+
+  function renderChainSteps() {
+    dom.chainSteps.textContent = '';
+    if (!state.chainSteps.length) {
+      const empty = document.createElement('p');
+      empty.className = 'rows-empty';
+      empty.textContent = '还没有步骤，点「添加步骤」开始串联';
+      dom.chainSteps.appendChild(empty);
+      return;
+    }
+    state.chainSteps.forEach((step, index) => {
+      dom.chainSteps.appendChild(buildStepCard(step, index));
+    });
+  }
+
+  function stepOpButton(text, action, index, disabled) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn btn-ghost btn-small';
+    button.textContent = text;
+    button.dataset.action = action;
+    button.dataset.index = String(index);
+    button.disabled = disabled;
+    return button;
+  }
+
+  function buildStepCard(step, index) {
+    const card = document.createElement('article');
+    card.className = 'chain-step';
+    if (step.skipped) card.classList.add('skipped');
+    card.dataset.stepUid = step.uid;
+
+    const head = document.createElement('div');
+    head.className = 'chain-step-head';
+    const title = document.createElement('span');
+    title.className = 'chain-step-title';
+    title.textContent = `第 ${index + 1} 步`;
+    head.appendChild(title);
+    if (step.skipped) head.appendChild(buildTag('已跳过', 'any'));
+
+    const ops = document.createElement('div');
+    ops.className = 'chain-step-ops';
+    ops.append(
+      stepOpButton('上移', 'move-up', index, index === 0),
+      stepOpButton('下移', 'move-down', index, index === state.chainSteps.length - 1),
+      stepOpButton(step.skipped ? '恢复' : '跳过', 'toggle-skip', index, false),
+      stepOpButton('移除', 'remove', index, false)
+    );
+    head.appendChild(ops);
+    card.appendChild(head);
+
+    const select = document.createElement('select');
+    select.className = 'chain-step-case';
+    select.dataset.action = 'pick-case';
+    select.dataset.index = String(index);
+    select.setAttribute('aria-label', `第 ${index + 1} 步选择的用例`);
+    select.add(new Option('请选择用例', ''));
+    state.cases.forEach((item) => {
+      select.add(new Option(`${item.method} · ${item.name}`, item.id));
+    });
+    if (step.caseId && !state.cases.some((item) => item.id === step.caseId)) {
+      select.add(new Option('（用例已删除）', step.caseId));
+    }
+    select.value = step.caseId;
+    card.appendChild(select);
+
+    const caseItem = state.cases.find((item) => item.id === step.caseId);
+    if (caseItem) {
+      const summary = document.createElement('p');
+      summary.className = 'chain-step-url';
+      summary.textContent = `${caseItem.method} ${caseItem.url}`;
+      card.appendChild(summary);
+    }
+
+    const extractsBox = document.createElement('div');
+    extractsBox.className = 'chain-extracts';
+    step.extracts.forEach((rule, ruleIndex) => {
+      extractsBox.appendChild(buildExtractRow(step, index, rule, ruleIndex));
+    });
+    const addRule = document.createElement('button');
+    addRule.type = 'button';
+    addRule.className = 'btn btn-ghost btn-small';
+    addRule.dataset.action = 'add-extract';
+    addRule.dataset.index = String(index);
+    addRule.textContent = '添加注入';
+    extractsBox.appendChild(addRule);
+    card.appendChild(extractsBox);
+
+    const error = document.createElement('p');
+    error.className = 'field-error chain-step-error';
+    error.hidden = true;
+    card.appendChild(error);
+
+    return card;
+  }
+
+  function buildExtractRow(step, stepIndex, rule, ruleIndex) {
+    const row = document.createElement('div');
+    row.className = 'chain-extract-row';
+
+    const keyInput = document.createElement('input');
+    keyInput.type = 'text';
+    keyInput.className = 'extract-key';
+    keyInput.placeholder = '占位标记，如 订单号';
+    keyInput.value = rule.key;
+    keyInput.dataset.action = 'extract-key';
+    keyInput.dataset.index = String(stepIndex);
+    keyInput.dataset.rule = String(ruleIndex);
+    keyInput.autocomplete = 'off';
+
+    const fromSelect = document.createElement('select');
+    fromSelect.className = 'extract-from';
+    fromSelect.dataset.action = 'extract-from';
+    fromSelect.dataset.index = String(stepIndex);
+    fromSelect.dataset.rule = String(ruleIndex);
+    fromSelect.add(new Option('从哪一步取值', ''));
+    state.chainSteps.forEach((item, itemIndex) => {
+      if (itemIndex >= stepIndex) return;
+      const sourceCase = state.cases.find((entry) => entry.id === item.caseId);
+      const label = `第 ${itemIndex + 1} 步${sourceCase ? ` · ${sourceCase.name}` : ''}${item.skipped ? '（已跳过）' : ''}`;
+      fromSelect.add(new Option(label, item.uid));
+    });
+    // 调整顺序后来源可能落到本步之后，或步骤已被移除，保留原值让校验提示
+    if (rule.fromStep && !Array.from(fromSelect.options).some((option) => option.value === rule.fromStep)) {
+      const missingIndex = state.chainSteps.findIndex((item) => item.uid === rule.fromStep);
+      const label = missingIndex === -1 ? '（步骤已不存在）' : `第 ${missingIndex + 1} 步（不在本步之前）`;
+      fromSelect.add(new Option(label, rule.fromStep));
+    }
+    fromSelect.value = rule.fromStep;
+
+    const pathInput = document.createElement('input');
+    pathInput.type = 'text';
+    pathInput.className = 'extract-path';
+    pathInput.placeholder = '取值路径，如 items[0].id';
+    pathInput.value = rule.path;
+    pathInput.dataset.action = 'extract-path';
+    pathInput.dataset.index = String(stepIndex);
+    pathInput.dataset.rule = String(ruleIndex);
+    pathInput.autocomplete = 'off';
+    pathInput.spellcheck = false;
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn btn-ghost btn-small';
+    remove.textContent = '删除';
+    remove.dataset.action = 'remove-extract';
+    remove.dataset.index = String(stepIndex);
+    remove.dataset.rule = String(ruleIndex);
+
+    row.append(keyInput, fromSelect, pathInput, remove);
+    return row;
+  }
+
+  // ---------------- 链路本地校验 ----------------
+
+  // 与服务端一致的取值路径写法：items[0].id 与 items.0.id 都接受
+  function parseExtractPathLocal(path) {
+    const text = typeof path === 'string' ? path.trim() : '';
+    if (!text) return null;
+    const normalized = text
+      .replace(/\[\s*(\d+)\s*\]/g, '.$1')
+      .replace(/\[\s*["']([^"']+)["']\s*\]/g, '.$1');
+    if (normalized.includes('[') || normalized.includes(']')) return null;
+    const segments = normalized.split('.').map((segment) => segment.trim());
+    if (segments.some((segment) => !segment)) return null;
+    return segments;
+  }
+
+  // 在未跳过的步骤之间找互相依赖绕成一圈的情况，找到时返回圈上的步骤编号
+  function findChainCycle(steps) {
+    const graph = new Map();
+    steps.forEach((step) => {
+      if (!step.skipped) graph.set(step.uid, []);
+    });
+    steps.forEach((step) => {
+      if (step.skipped) return;
+      step.extracts.forEach((rule) => {
+        if (graph.has(rule.fromStep)) graph.get(step.uid).push(rule.fromStep);
+      });
+    });
+    const mark = new Map();
+    const stack = [];
+    let cycle = null;
+    const visit = (id) => {
+      if (cycle) return;
+      mark.set(id, 1);
+      stack.push(id);
+      (graph.get(id) || []).forEach((dep) => {
+        if (cycle) return;
+        const state = mark.get(dep) || 0;
+        if (state === 0) visit(dep);
+        else if (state === 1) cycle = stack.slice(stack.indexOf(dep));
+      });
+      stack.pop();
+      mark.set(id, 2);
+    };
+    graph.forEach((_deps, id) => {
+      if (!cycle && !mark.get(id)) visit(id);
+    });
+    return cycle;
+  }
+
+  // 本地校验：每次编辑后即时运行，把问题当场标到对应步骤上；保存与运行前再拦一次
+  function validateChainLocal() {
+    const errors = [];
+    const steps = state.chainSteps;
+    const caseIds = new Set(state.cases.map((item) => item.id));
+    const indexById = new Map(steps.map((step, index) => [step.uid, index]));
+
+    steps.forEach((step, index) => {
+      if (step.skipped) return; // 被跳过的步骤不会执行，留待恢复时再检查
+      if (!step.caseId) {
+        errors.push({ stepIndex: index, message: `第 ${index + 1} 步还没有选择用例` });
+      } else if (!caseIds.has(step.caseId)) {
+        errors.push({ stepIndex: index, message: `第 ${index + 1} 步选择的用例不存在或已被删除` });
+      }
+      const seen = new Set();
+      step.extracts.forEach((rule, ruleIndex) => {
+        const where = `第 ${index + 1} 步的第 ${ruleIndex + 1} 条注入`;
+        const key = rule.key.trim();
+        if (!key) {
+          errors.push({ stepIndex: index, message: `${where}还没有填写占位标记名称` });
+        } else if (/[{}]/.test(key)) {
+          errors.push({ stepIndex: index, message: `${where}的占位标记名称「${key}」里不能出现花括号` });
+        } else if (seen.has(key)) {
+          errors.push({ stepIndex: index, message: `第 ${index + 1} 步的占位标记「${key}」重复填写` });
+        }
+        seen.add(key);
+        if (!rule.fromStep) errors.push({ stepIndex: index, message: `${where}还没有选择从哪一步取值` });
+        if (!rule.path.trim()) {
+          errors.push({ stepIndex: index, message: `${where}还没有填写取值路径` });
+        } else if (!parseExtractPathLocal(rule.path)) {
+          errors.push({ stepIndex: index, message: `${where}的取值路径「${rule.path.trim()}」写法不正确，示例：items[0].id` });
+        }
+      });
+    });
+
+    steps.forEach((step, index) => {
+      if (step.skipped) return;
+      step.extracts.forEach((rule) => {
+        if (rule.fromStep && !indexById.has(rule.fromStep)) {
+          errors.push({ stepIndex: index, message: `第 ${index + 1} 步的注入「{{${rule.key.trim()}}}」指向了链路里不存在的步骤` });
+        }
+      });
+    });
+
+    const cycle = findChainCycle(steps);
+    if (cycle) {
+      const labels = cycle.map((uid) => `第 ${indexById.get(uid) + 1} 步`).join(' 与 ');
+      errors.push({ stepIndex: -1, message: `链路里 ${labels} 互相依赖，绕成了一圈，请调整取值方向` });
+    }
+
+    steps.forEach((step, index) => {
+      if (step.skipped) return;
+      step.extracts.forEach((rule) => {
+        const fromIndex = indexById.get(rule.fromStep);
+        if (fromIndex === undefined) return;
+        if (fromIndex >= index) {
+          errors.push({ stepIndex: index, message: `第 ${index + 1} 步的注入「{{${rule.key.trim()}}}」指向的第 ${fromIndex + 1} 步排在本步之后，取值时它还没执行` });
+        } else if (steps[fromIndex].skipped) {
+          errors.push({ stepIndex: index, message: `第 ${index + 1} 步的注入「{{${rule.key.trim()}}}」指向的第 ${fromIndex + 1} 步已被跳过，不会执行` });
+        }
+      });
+    });
+
+    return errors;
+  }
+
+  // 把校验结果标到页面上：-2 表示链路名称，-1 表示步骤整体，其余落到对应步骤卡片
+  function renderChainErrors(errors) {
+    const nameSlot = document.querySelector('[data-chain-error="name"]');
+    const stepsSlot = document.querySelector('[data-chain-error="steps"]');
+    if (nameSlot) {
+      nameSlot.hidden = true;
+      nameSlot.textContent = '';
+    }
+    if (stepsSlot) {
+      stepsSlot.hidden = true;
+      stepsSlot.textContent = '';
+    }
+    dom.chainSteps.querySelectorAll('.chain-step-error').forEach((node) => {
+      node.hidden = true;
+      node.textContent = '';
+    });
+    dom.chainSteps.querySelectorAll('.chain-step').forEach((node) => node.classList.remove('invalid'));
+
+    errors.forEach((error) => {
+      if (error.stepIndex === -2) {
+        if (nameSlot) {
+          nameSlot.textContent = error.message;
+          nameSlot.hidden = false;
+        }
+        return;
+      }
+      if (error.stepIndex === -1) {
+        if (stepsSlot) {
+          stepsSlot.textContent = error.message;
+          stepsSlot.hidden = false;
+        }
+        return;
+      }
+      const step = state.chainSteps[error.stepIndex];
+      if (!step) return;
+      const card = dom.chainSteps.querySelector(`[data-step-uid="${step.uid}"]`);
+      const slot = card && card.querySelector('.chain-step-error');
+      if (slot) {
+        slot.textContent = error.message;
+        slot.hidden = false;
+        card.classList.add('invalid');
+      }
+    });
+  }
+
+  // 服务端返回的位置（steps.N.extracts.M...）归位到步骤卡片或整体区域
+  function showChainError(err) {
+    const field = typeof err.field === 'string' ? err.field : '';
+    const stepMatch = field.match(/^steps\.(\d+)/);
+    if (stepMatch) {
+      renderChainErrors([{ stepIndex: Number(stepMatch[1]), message: err.message }]);
+    } else if (field === 'name') {
+      renderChainErrors([{ stepIndex: -2, message: err.message }]);
+    } else if (field === 'steps') {
+      renderChainErrors([{ stepIndex: -1, message: err.message }]);
+    }
+    showNotice(err.message, 'error');
+  }
+
+  // 结构变化（增删移、跳过、换用例）需要重绘步骤列表，文字输入只刷新校验与预览
+  function afterChainEdit(rerender) {
+    if (rerender) renderChainSteps();
+    renderChainErrors(validateChainLocal());
+    renderChainPreview();
+  }
+
+  function collectChainPayload() {
+    return {
+      name: dom.chainName.value.trim(),
+      steps: state.chainSteps.map((step) => ({
+        id: step.uid,
+        caseId: step.caseId,
+        skipped: step.skipped,
+        extracts: step.extracts.map((rule) => ({
+          id: rule.uid,
+          key: rule.key.trim(),
+          fromStep: rule.fromStep,
+          path: rule.path.trim(),
+        })),
+      })),
+    };
+  }
+
+  // ---------------- 链路保存、删除与运行 ----------------
+
+  async function saveChain() {
+    if (state.chainBusy) return;
+    const errors = validateChainLocal();
+    if (!dom.chainName.value.trim()) {
+      errors.unshift({ stepIndex: -2, message: '请填写链路名称' });
+    }
+    renderChainErrors(errors);
+    if (errors.length) {
+      showNotice('链路还有问题没有处理，请按步骤上的提示调整', 'error');
+      return;
+    }
+
+    setChainBusy(true, 'save');
+    try {
+      const payload = collectChainPayload();
+      const saved = state.chainId
+        ? await request(`/api/chains/${encodeURIComponent(state.chainId)}`, { method: 'PUT', body: payload })
+        : await request('/api/chains', { method: 'POST', body: payload });
+      await loadChains();
+      loadChainIntoEditor(saved);
+      showNotice(`链路「${saved.name}」已保存，重新打开页面依然在`, 'success');
+    } catch (err) {
+      showChainError(err);
+    } finally {
+      setChainBusy(false);
+    }
+  }
+
+  async function deleteCurrentChain() {
+    if (state.chainBusy || !state.chainId) return;
+    const chain = state.chains.find((item) => item.id === state.chainId);
+    const confirmed = window.confirm(`确认删除链路「${chain ? chain.name : ''}」？只删除链路本身，链路里用到的用例不受影响。`);
+    if (!confirmed) return;
+
+    setChainBusy(true);
+    try {
+      await request(`/api/chains/${encodeURIComponent(state.chainId)}`, { method: 'DELETE' });
+      showNotice('链路已删除，用例不受影响', 'success');
+      startNewChain();
+      await loadChains();
+    } catch (err) {
+      showNotice(err.message, 'error');
+    } finally {
+      setChainBusy(false);
+    }
+  }
+
+  async function runChainNow() {
+    if (state.chainBusy) return;
+    const errors = validateChainLocal();
+    renderChainErrors(errors);
+    if (errors.length) {
+      showNotice('链路还有问题没有处理，请按步骤上的提示调整后再运行', 'error');
+      return;
+    }
+    if (!state.chainSteps.some((step) => !step.skipped)) {
+      renderChainErrors([{ stepIndex: -1, message: '链路里的步骤都被跳过了，至少恢复一步再运行' }]);
+      showNotice('链路里的步骤都被跳过了，至少恢复一步再运行', 'error');
+      return;
+    }
+
+    setChainBusy(true, 'run');
+    renderChainRunPending();
+    try {
+      const result = await request('/api/chains/run', { method: 'POST', body: collectChainPayload() });
+      state.chainRun = result;
+      renderChainRun(result);
+      if (result.ok) {
+        const sent = result.steps.filter((step) => !step.skipped).length;
+        showNotice(`链路运行完成：共 ${sent} 步，耗时 ${formatDuration(result.totalMs)}`, 'success');
+      } else {
+        showNotice(result.failure.message, 'error');
+      }
+    } catch (err) {
+      state.chainRun = null;
+      dom.chainRun.textContent = '';
+      showChainError(err);
+    } finally {
+      setChainBusy(false);
+    }
+  }
+
+  // ---------------- 链路发送预览 ----------------
+
+  // 把文本里的 {{标记}} 拆出来高亮：有规则的按正常标记显示，没有规则的标成待补
+  function appendTextWithPlaceholders(parent, text, step) {
+    const pattern = /\{\{[^{}]+\}\}/g;
+    let last = 0;
+    let match = pattern.exec(text);
+    while (match) {
+      if (match.index > last) parent.appendChild(document.createTextNode(text.slice(last, match.index)));
+      const key = match[0].slice(2, -2).trim();
+      const known = step.extracts.some((rule) => rule.key.trim() === key);
+      const span = document.createElement('span');
+      span.className = known ? 'ph' : 'ph ph-missing';
+      span.textContent = match[0];
+      parent.appendChild(span);
+      last = match.index + match[0].length;
+      match = pattern.exec(text);
+    }
+    if (last < text.length) parent.appendChild(document.createTextNode(text.slice(last)));
+  }
+
+  function placeholderRegExpLocal(key) {
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\{\\{\\s*${escaped}\\s*\\}\\}`);
+  }
+
+  // 占位标记在用例内容里出现的位置，预览里据此说明值会被换到哪里
+  function describeTargets(caseItem, key) {
+    const pattern = placeholderRegExpLocal(key);
+    const targets = [];
+    if (pattern.test(caseItem.url)) targets.push('目标地址');
+    caseItem.headers.forEach((row, index) => {
+      if (pattern.test(row.key) || pattern.test(row.value)) targets.push(`第 ${index + 1} 行请求头`);
+    });
+    if (pattern.test(caseItem.body)) targets.push('请求内容');
+    return targets;
+  }
+
+  function findPlaceholders(caseItem) {
+    const keys = new Set();
+    const scan = (text) => {
+      const pattern = /\{\{([^{}]+)\}\}/g;
+      let match = pattern.exec(text || '');
+      while (match) {
+        keys.add(match[1].trim());
+        match = pattern.exec(text || '');
+      }
+    };
+    scan(caseItem.url);
+    caseItem.headers.forEach((row) => {
+      scan(row.key);
+      scan(row.value);
+    });
+    scan(caseItem.body);
+    return Array.from(keys);
+  }
+
+  // 每一步的注入说明：值从哪一步的哪一段取、换到哪里；没有规则的标记单独提醒
+  function buildInjectionNotes(step, stepIndex, caseItem) {
+    const notes = [];
+    const indexById = new Map(state.chainSteps.map((item, index) => [item.uid, index]));
+    step.extracts.forEach((rule) => {
+      const key = rule.key.trim();
+      if (!key) return;
+      const fromIndex = indexById.get(rule.fromStep);
+      const targets = describeTargets(caseItem, key);
+      const fromLabel = fromIndex === undefined ? '（步骤不存在）' : `第 ${fromIndex + 1} 步`;
+      const pathLabel = rule.path.trim() || '（未填路径）';
+      const targetLabel = targets.length ? `注入到 ${targets.join('、')}` : '内容里没有用到这个标记';
+      notes.push({ text: `{{${key}}} ← ${fromLabel} · ${pathLabel} · ${targetLabel}`, warn: fromIndex === undefined });
+    });
+    findPlaceholders(caseItem).forEach((key) => {
+      if (!step.extracts.some((rule) => rule.key.trim() === key)) {
+        notes.push({ text: `{{${key}}} 没有对应的注入规则，运行时会原样发出`, warn: true });
+      }
+    });
+    if (!notes.length) return null;
+    const box = document.createElement('div');
+    box.className = 'chain-inject-notes';
+    notes.forEach((note) => {
+      const line = document.createElement('p');
+      line.className = note.warn ? 'chain-inject-note warn' : 'chain-inject-note';
+      line.textContent = note.text;
+      box.appendChild(line);
+    });
+    return box;
+  }
+
+  // 发送预览：按当前步骤顺序展示每一步实际会发出的内容，发送前就能确认
+  function renderChainPreview() {
+    dom.chainPreview.textContent = '';
+    if (!state.chainSteps.length) return;
+
+    const head = document.createElement('p');
+    head.className = 'chain-block-title';
+    head.textContent = '发送预览 · 运行前确认每一步实际发出的内容';
+    dom.chainPreview.appendChild(head);
+
+    state.chainSteps.forEach((step, index) => {
+      const caseItem = state.cases.find((item) => item.id === step.caseId);
+      const card = document.createElement('div');
+      card.className = 'chain-preview-step';
+      if (step.skipped) card.classList.add('skipped');
+
+      const title = document.createElement('p');
+      title.className = 'chain-preview-title';
+      title.textContent = step.skipped
+        ? `第 ${index + 1} 步 · ${caseItem ? caseItem.name : '未选择用例'}（已跳过，不会发出）`
+        : `第 ${index + 1} 步 · ${caseItem ? caseItem.name : '未选择用例'}`;
+      card.appendChild(title);
+
+      if (!step.skipped && caseItem) {
+        const urlLine = document.createElement('p');
+        urlLine.className = 'chain-preview-line';
+        urlLine.appendChild(buildTag(caseItem.method, String(caseItem.method).toLowerCase()));
+        const urlText = document.createElement('span');
+        urlText.className = 'chain-preview-url';
+        appendTextWithPlaceholders(urlText, caseItem.url, step);
+        urlLine.appendChild(urlText);
+        card.appendChild(urlLine);
+
+        if (caseItem.headers.length) {
+          const headerBox = document.createElement('div');
+          headerBox.className = 'chain-preview-headers';
+          caseItem.headers.forEach((row) => {
+            const line = document.createElement('p');
+            line.className = 'chain-preview-header';
+            const keyNode = document.createElement('span');
+            keyNode.className = 'chain-preview-header-key';
+            appendTextWithPlaceholders(keyNode, row.key, step);
+            const valueNode = document.createElement('span');
+            appendTextWithPlaceholders(valueNode, row.value, step);
+            line.append(keyNode, document.createTextNode(': '), valueNode);
+            headerBox.appendChild(line);
+          });
+          card.appendChild(headerBox);
+        }
+
+        if (caseItem.body) {
+          const bodyPre = document.createElement('pre');
+          bodyPre.className = 'chain-preview-body';
+          appendTextWithPlaceholders(bodyPre, caseItem.body, step);
+          card.appendChild(bodyPre);
+        }
+
+        const notes = buildInjectionNotes(step, index, caseItem);
+        if (notes) card.appendChild(notes);
+      }
+      dom.chainPreview.appendChild(card);
+    });
+  }
+
+  // ---------------- 链路运行结果 ----------------
+
+  function renderChainRunPending() {
+    dom.chainRun.textContent = '';
+    const block = document.createElement('div');
+    block.className = 'result-pending';
+    const title = document.createElement('p');
+    title.className = 'pending-title';
+    title.textContent = '链路运行中，正在按顺序发送每一步…';
+    const sub = document.createElement('p');
+    sub.className = 'empty-sub';
+    sub.textContent = '每一步发出的内容与取值来源会在运行结束后展示在这里。';
+    block.append(title, sub);
+    dom.chainRun.appendChild(block);
+  }
+
+  function describeRunTargets(targets) {
+    if (!targets || !targets.length) return '内容里没有用到这个标记';
+    return targets
+      .map((targetRef) => {
+        if (targetRef === 'url') return '目标地址';
+        if (targetRef === 'body') return '请求内容';
+        const match = /^header\.(\d+)$/.exec(targetRef);
+        if (match) return `第 ${Number(match[1]) + 1} 行请求头`;
+        return targetRef;
+      })
+      .join('、');
+  }
+
+  function buildRunStepCard(stepResult) {
+    const card = document.createElement('div');
+    card.className = 'chain-run-step';
+
+    const head = document.createElement('div');
+    head.className = 'result-head';
+    const title = document.createElement('span');
+    title.className = 'chain-run-title';
+    title.textContent = `第 ${stepResult.index + 1} 步 · ${stepResult.caseName || '未选择用例'}`;
+    head.appendChild(title);
+
+    if (stepResult.skipped) {
+      card.classList.add('skipped');
+      head.appendChild(buildChip('已跳过，没有发出'));
+      card.appendChild(head);
+      return card;
+    }
+
+    if (stepResult.result && stepResult.result.ok) {
+      head.appendChild(buildStatusBadge(stepResult.result.status, stepResult.result.statusText));
+      head.appendChild(buildChip(`耗时 ${formatDuration(stepResult.result.timeMs)}`));
+    } else {
+      head.appendChild(buildStatusBadge(0, '未完成'));
+      if (stepResult.result) head.appendChild(buildChip(`已等待 ${formatDuration(stepResult.result.timeMs)}`));
+    }
+    card.appendChild(head);
+
+    if (stepResult.request) {
+      const reqSection = buildSection('实际发出的请求');
+      const urlLine = document.createElement('p');
+      urlLine.className = 'result-target';
+      urlLine.textContent = `${stepResult.request.method} ${stepResult.request.url}`;
+      reqSection.appendChild(urlLine);
+      if (stepResult.request.headers.length) {
+        reqSection.appendChild(buildHeaderTable(stepResult.request.headers));
+      }
+      if (stepResult.request.body) reqSection.appendChild(buildPre(stepResult.request.body));
+      card.appendChild(reqSection);
+    }
+
+    if (stepResult.injections && stepResult.injections.length) {
+      const injSection = buildSection('本步换入的值');
+      stepResult.injections.forEach((injection) => {
+        const line = document.createElement('p');
+        line.className = 'chain-inject-note';
+        const valueText = injection.value.length > 120 ? `${injection.value.slice(0, 120)}…` : injection.value;
+        line.textContent =
+          `{{${injection.key}}} → ${JSON.stringify(valueText)} · 取自第 ${injection.fromIndex + 1} 步 · ` +
+          `${injection.path} · 注入到 ${describeRunTargets(injection.targets)}`;
+        injSection.appendChild(line);
+      });
+      card.appendChild(injSection);
+    }
+
+    const resSection = buildSection('响应');
+    const res = stepResult.result;
+    if (res && res.ok) {
+      const bodyText = typeof res.body === 'string' ? res.body : '';
+      if (bodyText.trim()) {
+        const trimmed = bodyText.length > 4000 ? `${bodyText.slice(0, 4000)}\n…（内容较长，仅展示开头部分）` : bodyText;
+        resSection.appendChild(buildPre(trimmed));
+      } else {
+        resSection.appendChild(buildTextNote('本次响应没有返回内容'));
+      }
+    } else if (res && res.failure) {
+      resSection.appendChild(buildFailurePanel('请求没有完成', res.failure.reason, res.failure.detail));
+    }
+    card.appendChild(resSection);
+    return card;
+  }
+
+  function renderChainRun(result) {
+    dom.chainRun.textContent = '';
+
+    const head = document.createElement('div');
+    head.className = 'result-head';
+    const badge = document.createElement('span');
+    badge.className = result.ok ? 'status-badge status-ok' : 'status-badge status-bad';
+    badge.textContent = result.ok ? '链路运行完成' : '链路未完成';
+    head.appendChild(badge);
+    head.appendChild(buildChip(`总耗时 ${formatDuration(result.totalMs)}`));
+    dom.chainRun.appendChild(head);
+
+    result.steps.forEach((stepResult) => {
+      dom.chainRun.appendChild(buildRunStepCard(stepResult));
+    });
+
+    if (!result.ok && result.failure) {
+      dom.chainRun.appendChild(buildFailurePanel(`链路在第 ${result.failure.stepIndex + 1} 步停下`, result.failure.message, ''));
+    }
+    dom.chainRun.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
   // ---------------- 结果区小零件 ----------------
 
   function buildSection(title) {
@@ -970,6 +1779,110 @@
       renderCases();
       renderEmptyDetail();
     });
+
+    // 链路区：文字输入只更新状态与校验，结构变化才重绘步骤列表
+    dom.chainSteps.addEventListener('input', (event) => {
+      const target = event.target;
+      const action = target.dataset ? target.dataset.action : '';
+      const index = Number(target.dataset ? target.dataset.index : NaN);
+      const ruleIndex = Number(target.dataset ? target.dataset.rule : NaN);
+      const step = state.chainSteps[index];
+      if (!step || !step.extracts[ruleIndex]) return;
+      if (action === 'extract-key') step.extracts[ruleIndex].key = target.value;
+      else if (action === 'extract-path') step.extracts[ruleIndex].path = target.value;
+      else return;
+      afterChainEdit(false);
+    });
+
+    dom.chainSteps.addEventListener('change', (event) => {
+      const target = event.target;
+      const action = target.dataset ? target.dataset.action : '';
+      const index = Number(target.dataset ? target.dataset.index : NaN);
+      const ruleIndex = Number(target.dataset ? target.dataset.rule : NaN);
+      const step = state.chainSteps[index];
+      if (!step) return;
+      if (action === 'pick-case') {
+        step.caseId = target.value;
+        afterChainEdit(true);
+      } else if (action === 'extract-from' && step.extracts[ruleIndex]) {
+        step.extracts[ruleIndex].fromStep = target.value;
+        afterChainEdit(true);
+      }
+    });
+
+    dom.chainSteps.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-action]');
+      if (!button) return;
+      const action = button.dataset.action;
+      const index = Number(button.dataset.index);
+      const step = state.chainSteps[index];
+      if (action === 'add-extract' && step) {
+        step.extracts.push(createEmptyExtract());
+        afterChainEdit(true);
+      } else if (action === 'remove-extract' && step) {
+        step.extracts.splice(Number(button.dataset.rule), 1);
+        afterChainEdit(true);
+      } else if (action === 'move-up' && index > 0) {
+        [state.chainSteps[index - 1], state.chainSteps[index]] = [state.chainSteps[index], state.chainSteps[index - 1]];
+        afterChainEdit(true);
+      } else if (action === 'move-down' && index < state.chainSteps.length - 1) {
+        [state.chainSteps[index + 1], state.chainSteps[index]] = [state.chainSteps[index], state.chainSteps[index + 1]];
+        afterChainEdit(true);
+      } else if (action === 'toggle-skip' && step) {
+        step.skipped = !step.skipped;
+        afterChainEdit(true);
+      } else if (action === 'remove' && step) {
+        state.chainSteps.splice(index, 1);
+        afterChainEdit(true);
+      }
+    });
+
+    dom.addStep.addEventListener('click', () => {
+      state.chainSteps.push(createEmptyStep());
+      afterChainEdit(true);
+    });
+
+    dom.chainName.addEventListener('input', () => {
+      const slot = document.querySelector('[data-chain-error="name"]');
+      if (slot) slot.hidden = true;
+    });
+
+    dom.chainSelect.addEventListener('change', () => {
+      const id = dom.chainSelect.value;
+      if (!id) {
+        startNewChain();
+        return;
+      }
+      const chain = state.chains.find((item) => item.id === id);
+      if (chain) {
+        loadChainIntoEditor(chain);
+        showNotice(`链路「${chain.name}」已打开`, 'info');
+      }
+    });
+
+    dom.newChain.addEventListener('click', () => {
+      if (state.chainBusy) return;
+      startNewChain();
+      showNotice('已开始新建链路，选好每一步的用例后点保存链路', 'info');
+    });
+
+    dom.deleteChain.addEventListener('click', deleteCurrentChain);
+    dom.saveChain.addEventListener('click', saveChain);
+    dom.runChain.addEventListener('click', runChainNow);
+
+    dom.refreshChains.addEventListener('click', async () => {
+      if (state.chainBusy) return;
+      try {
+        await loadCases();
+        await loadChains();
+        renderChainSteps();
+        renderChainErrors(validateChainLocal());
+        renderChainPreview();
+        showNotice('用例与链路列表已刷新', 'info');
+      } catch (err) {
+        showNotice(err.message, 'error');
+      }
+    });
   }
 
   async function init() {
@@ -985,6 +1898,12 @@
     } catch (err) {
       showNotice(err.message, 'error');
     }
+    try {
+      await loadChains();
+    } catch (err) {
+      showNotice(err.message, 'error');
+    }
+    startNewChain();
   }
 
   init();

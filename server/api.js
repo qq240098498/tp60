@@ -98,7 +98,9 @@ function validateHeaders(headers) {
   return list;
 }
 
-// 请求内容按请求方式与内容类型校验：GET 与 HEAD 不允许带内容，JSON 内容必须能解析
+// 请求内容按请求方式与内容类型校验：GET 与 HEAD 不允许带内容，JSON 内容必须能解析。
+// 内容里可以写链路用的 {{标记}} 占位：校验时先把标记当成 null 站位，
+// 这样写在字符串里或直接当作一个 JSON 取值都能通过，真正发送前由链路把值换进去
 function validateBody(body, method, headers) {
   const value = typeof body === 'string' ? body : '';
   if (value.length > MAX_BODY_LENGTH) {
@@ -111,8 +113,9 @@ function validateBody(body, method, headers) {
   const contentType = headers.find((row) => row.key.toLowerCase() === 'content-type');
   const contentTypeValue = contentType ? contentType.value.toLowerCase() : '';
   if (contentTypeValue.includes('json')) {
+    const standIn = value.replace(/\{\{[^{}]+\}\}/g, 'null');
     try {
-      JSON.parse(value);
+      JSON.parse(standIn);
     } catch (err) {
       throw new ApiError(400, 'BODY_INVALID_JSON', `请求内容不是合法的 JSON：${err.message}`, 'body');
     }

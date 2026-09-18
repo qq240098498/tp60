@@ -59,6 +59,50 @@
       "body": "",
       "createdAt": "2026-09-17T02:30:00.000Z",
       "updatedAt": "2026-09-17T02:30:00.000Z"
+    },
+    {
+      "id": "case-1005",
+      "name": "回声接口占位标记回显",
+      "method": "GET",
+      "url": "/demo/echo?from=chain&first={{首个编号}}",
+      "headers": [
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "body": "",
+      "createdAt": "2026-09-17T02:50:00.000Z",
+      "updatedAt": "2026-09-17T02:50:00.000Z"
+    }
+  ],
+  "chains": [
+    {
+      "id": "chain-2001",
+      "name": "列表首个编号回传链路13213",
+      "steps": [
+        {
+          "id": "step-2001a",
+          "caseId": "case-1003",
+          "skipped": false,
+          "extracts": []
+        },
+        {
+          "id": "step-2001b",
+          "caseId": "case-1005",
+          "skipped": false,
+          "extracts": [
+            {
+              "id": "ex-2001",
+              "key": "首个编号",
+              "fromStep": "step-2001a",
+              "path": "items[0].id"
+            }
+          ]
+        }
+      ],
+      "createdAt": "2026-09-17T03:10:00.000Z",
+      "updatedAt": "2026-09-18T05:59:40.791Z"
     }
   ]
 }

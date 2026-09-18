@@ -45,6 +45,7 @@ function describeFailure(err) {
     TIMEOUT: `等待目标响应超过 ${WAIT_LIMIT_MS / 1000} 秒，已停止等待`,
     EPROTO: '与目标地址的协议不匹配，握手没有完成',
     ERR_INVALID_URL: '目标地址格式不正确，无法发起请求',
+    ERR_INVALID_CHAR: '请求头或地址里含有协议不允许的字符（例如请求头取值里出现中文）',
   };
   return {
     reason: known[code] || '这次请求没有成功完成，请检查目标地址与网络情况',
@@ -99,7 +100,10 @@ function sendOutgoing(draft, port) {
       resolve(payload);
     };
 
-    const request = transport.request(options, (response) => {
+    // 请求本身都构造不出来时（例如请求头取值里有协议不允许的字符），同样按失败结果返回
+    let request = null;
+    try {
+      request = transport.request(options, (response) => {
       const chunks = [];
       let received = 0;
       let truncated = false;
@@ -141,7 +145,11 @@ function sendOutgoing(draft, port) {
           body: Buffer.concat(chunks).toString('utf8'),
         });
       });
-    });
+      });
+    } catch (err) {
+      finish(buildFailure(err, target.url.toString(), target.internal, startedAt));
+      return;
+    }
 
     request.on('error', (err) => {
       finish(buildFailure(err, target.url.toString(), target.internal, startedAt));

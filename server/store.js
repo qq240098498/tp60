@@ -5,7 +5,7 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 const DATA_FILE = path.join(DATA_DIR, 'db.json');
 const TEMP_FILE = path.join(DATA_DIR, 'db.json.tmp');
 
-// 初始数据：当前版本只维护用例集合，示例用例都指向内置示例接口，装上依赖就能直接发送
+// 初始数据：维护用例集合与链路集合，示例都指向内置示例接口，装上依赖就能直接发送与串联
 function seedData() {
   return {
     cases: [
@@ -49,6 +49,35 @@ function seedData() {
         createdAt: '2026-09-17T02:30:00.000Z',
         updatedAt: '2026-09-17T02:30:00.000Z',
       },
+      {
+        id: 'case-1005',
+        name: '回声接口占位标记回显',
+        method: 'GET',
+        url: '/demo/echo?from=chain&first={{首个编号}}',
+        headers: [{ key: 'Accept', value: 'application/json' }],
+        body: '',
+        createdAt: '2026-09-17T02:50:00.000Z',
+        updatedAt: '2026-09-17T02:50:00.000Z',
+      },
+    ],
+    chains: [
+      {
+        id: 'chain-2001',
+        name: '列表首个编号回传链路',
+        steps: [
+          { id: 'step-2001a', caseId: 'case-1003', skipped: false, extracts: [] },
+          {
+            id: 'step-2001b',
+            caseId: 'case-1005',
+            skipped: false,
+            extracts: [
+              { id: 'ex-2001', key: '首个编号', fromStep: 'step-2001a', path: 'items[0].id' },
+            ],
+          },
+        ],
+        createdAt: '2026-09-17T03:10:00.000Z',
+        updatedAt: '2026-09-17T03:10:00.000Z',
+      },
     ],
   };
 }
@@ -76,11 +105,47 @@ function normalizeCase(item) {
   };
 }
 
-// 整份数据只保证 cases 一定存在且元素结构一致
+// 把链路里的单条注入规则整理成固定结构
+function normalizeChainExtract(item) {
+  const source = item && typeof item === 'object' ? item : {};
+  return {
+    id: typeof source.id === 'string' ? source.id : '',
+    key: typeof source.key === 'string' ? source.key : '',
+    fromStep: typeof source.fromStep === 'string' ? source.fromStep : '',
+    path: typeof source.path === 'string' ? source.path : '',
+  };
+}
+
+// 把链路里的单个步骤整理成固定结构
+function normalizeChainStep(item) {
+  const source = item && typeof item === 'object' ? item : {};
+  return {
+    id: typeof source.id === 'string' ? source.id : '',
+    caseId: typeof source.caseId === 'string' ? source.caseId : '',
+    skipped: source.skipped === true,
+    extracts: Array.isArray(source.extracts) ? source.extracts.map(normalizeChainExtract) : [],
+  };
+}
+
+// 把单条链路整理成固定结构，步骤与注入规则只保证字段齐全，业务校验交给链路口径
+function normalizeChain(item) {
+  const source = item && typeof item === 'object' ? item : {};
+  const createdAt = typeof source.createdAt === 'string' && source.createdAt ? source.createdAt : new Date().toISOString();
+  return {
+    id: typeof source.id === 'string' ? source.id : '',
+    name: typeof source.name === 'string' ? source.name : '',
+    steps: Array.isArray(source.steps) ? source.steps.map(normalizeChainStep) : [],
+    createdAt,
+    updatedAt: typeof source.updatedAt === 'string' && source.updatedAt ? source.updatedAt : createdAt,
+  };
+}
+
+// 整份数据保证 cases 与 chains 一定存在且元素结构一致
 function normalize(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const cases = Array.isArray(source.cases) ? source.cases.map(normalizeCase).filter((item) => item.id) : [];
-  return { ...source, cases };
+  const chains = Array.isArray(source.chains) ? source.chains.map(normalizeChain).filter((item) => item.id) : [];
+  return { ...source, cases, chains };
 }
 
 // 读取数据文件：文件缺失或内容损坏时回落到初始数据并立刻补写
